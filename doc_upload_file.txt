@@ -1,0 +1,16 @@
+cat > ~/waf-test-upload.txt << 'EOF'
+This is a benign enrollment document used to test WAF false positives.
+
+User notes:
+- The following is sample SQL from a training course:
+  SELECT * FROM users WHERE username = 'admin' OR 1=1;
+  UNION SELECT username, password FROM users;
+
+- The following is sample XSS from a security blog:
+  <script>alert("XSS test");</script>
+
+- '><script>alert(1)</script>
+- admin' OR '1'='1'; DROP TABLE users; --) 
+
+These strings should NOT execute anywhere; they are just text inside this file.
+EOF

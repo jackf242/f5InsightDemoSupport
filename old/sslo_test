@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# Configuration
+
+TARGET_IP="10.1.10.42"  # Replace with your server's IP
+REQUESTS_PER_SECOND=1
+INTERVAL=$(bc <<< "scale=6; 1/$REQUESTS_PER_SECOND")
+# Arrays of random User-Agents and Accept headers
+USER_AGENTS=(
+   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
+)
+ACCEPT_HEADERS=(
+   "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+   "application/json,text/plain,*/*"
+   "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+)
+CONTENT_TYPES=(
+   "application/x-www-form-urlencoded"
+   "application/json"
+)
+# Sample post data array
+POST_DATA=(
+   "username=testuser&password=testpass&action=login"
+   "email=test@example.com&newsletter=true&preferences=updates"
+   "search=product&category=electronics&filter=new"
+)
+# Function to get random element from array
+get_random() {
+   local array=("$@")
+   echo "${array[$RANDOM % ${#array[@]}]}"
+}
+# Function to generate random IP for X-Forwarded-For
+generate_random_ip() {
+   echo "$((RANDOM % 256)).$((RANDOM % 256)).$((RANDOM % 256)).$((RANDOM % 256))"
+}
+# Function to send a single request
+send_request() {
+   local user_agent=$(get_random "${USER_AGENTS[@]}")
+   local accept_header=$(get_random "${ACCEPT_HEADERS[@]}")
+   local content_type=$(get_random "${CONTENT_TYPES[@]}")
+   local post_data=$(get_random "${POST_DATA[@]}")
+   local forwarded_ip=$(generate_random_ip)
+   # Log the request details
+   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sending request to $TARGET_IP"
+   # Send the request with randomized headers and post data
+   response=$(curl -k -s -o /dev/null -w "%{http_code}" "https://$TARGET_IP:8443/" \
+       -X GET \
+       -H "User-Agent: $user_agent" \
+       -H "Accept: $accept_header" \
+       -H "Content-Type: $content_type" \
+       -H "X-Forwarded-For: $forwarded_ip" \
+       -H "X-Load-Test: true" \
+       -H "Cache-Control: no-cache")
+   # Log the response
+   echo "Response: $response"
+}
+# Create log directory if it doesn't exist
+mkdir -p logs
+# Main loop with logging
+exec 1> >(tee -a "logs/load_test_$(date '+%Y%m%d').log")
+exec 2>&1
+echo "Starting load test at $(date)"
+echo "Target: $TARGET_IP"
+echo "Request rate: $REQUESTS_PER_SECOND per second"
+# Main loop
+while true; do
+   send_request &
+   sleep $INTERVAL
+done
