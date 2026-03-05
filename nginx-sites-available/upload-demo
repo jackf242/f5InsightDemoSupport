@@ -1,0 +1,17 @@
+server {
+    listen 8888;
+    server_name _;
+
+    root /var/www/upload;
+    client_max_body_size 50m;
+
+    # Upload form
+    location = / {
+        try_files /index.html =404;
+    }
+
+    # Fake upload handler – no backend required
+    location = /enrollment/upload {
+        return 200 "Upload received\n";
+    }
+}
