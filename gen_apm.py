@@ -11,8 +11,9 @@ BASES = [
     "https://ast42.demo.f5:6443",
 ]
 
-WEBTOP_URI    = "/vdesk/"
-PROTECTED_URI = "/vdesk/"
+WEBTOP_URI         = "/vdesk/"      # full APM session (webtop/NA)
+ACCESS_ONLY_URIS   = ["/vdesk/",    # or real app URIs that are just WAM
+                      "/app1/"]     # adjust to real 200-OK paths
 
 USERS = [
     ("user1", "user1"),
@@ -36,7 +37,7 @@ def login_and_start_apm_session(base, username, password):
     payload = {"username": username, "password": password}
     r = s.post(f"{base}/my.policy", data=payload, allow_redirects=True)
 
-    # 3) Hit webtop once after auth
+    # 3) Hit webtop once after auth to ensure full APM session
     r_webtop = s.get(f"{base}{WEBTOP_URI}", allow_redirects=True)
 
     print(f"[login] {base} {username} status={r.status_code} "
@@ -60,9 +61,12 @@ while True:
     s = sessions[(base, user)]
     pwd = next(p for (u, p) in USERS if u == user)
 
+    # randomly pick a URI so some traffic is “web access only”
+    uri = random.choice(ACCESS_ONLY_URIS)
+
     try:
         r = s.get(
-            f"{base}{PROTECTED_URI}",
+            f"{base}{uri}",
             headers={"User-Agent": "apm-loadgen-python"},
             allow_redirects=True,
         )
@@ -79,7 +83,8 @@ while True:
             print(f"[relogin-error] {base} {user}: {e}")
     else:
         print(i, r.status_code, "base=", base, "user=", user,
-              "MRHSession=", s.cookies.get("MRHSession"))
+              "uri=", uri, "MRHSession=", s.cookies.get("MRHSession"))
         i += 1
 
+    # ~5–15 total requests/min
     time.sleep(random.randint(4, 12))
