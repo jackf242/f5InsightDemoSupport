@@ -1,0 +1,32 @@
+# Edit this file to introduce tasks to be run by cron.
+# 
+# For more information see the manual pages of crontab(5) and cron(8)
+# 
+# m h  dom mon dow   command
+#
+#
+# >>> >>> >>> >>> >>> >>>  <<< <<< <<< <<< <<< <<< <<<
+# New http generation script in Python
+# >>>                                              <<<
+@reboot /usr/bin/python3 /home/ubuntu/scripts/gen4.py > /dev/null
+@reboot /usr/bin/python3 /home/ubuntu/scripts/gen_waf.py > /dev/null
+# Generate APM traffic
+@reboot /usr/bin/python3 /home/ubuntu/scripts/gen_apm.py > /dev/null
+# Creates delay (configurable) nginx server member / pool member on port 8420
+@reboot /usr/bin/python3 /home/ubuntu/scripts/delay_server.py > /dev/null
+# >>>                                              <<<
+# >>> >>> >>> >>> >>> >>>  <<< <<< <<< <<< <<< <<< <<<
+#DNS queries to populate counters
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+* * * * * dig test2.f5demo.com @10.1.10.42 > /dev/null
+#
+0 0 * * * sudo cp -a /etc/nginx/sites-available/* nginx-sites-available/ ; sudo chown -R "$USER":"$USER" nginx-sites-available > /dev/null
+0 0 * * * sudo cp -a /var/www/upload/* var-www-upload/ ; sudo chown -R "$USER":"$USER" var-www-upload > /dev/null
+0 0 * * * crontab -l > /home/ubuntu/scripts/cron/crontab.txt 2>&1
