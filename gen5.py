@@ -156,7 +156,8 @@ _PROXY_CHAINS = [
 def generate_xff() -> str:
     """Generate a realistic X-Forwarded-For value using proxy chain patterns."""
     client = _random_private_ip() if random.random() < 0.6 else _random_public_ip()
-    return random.choice(_PROXY_CHAINS)(client)
+ #   return random.choice(_PROXY_CHAINS)(client)
+    return _random_public_ip()
 
 
 # Pre-warm an XFF pool for the high-throughput batch engine
