@@ -137,17 +137,18 @@ def _random_public_ip() -> str:
 
 
 # Proxy-chain lambdas for realistic XFF construction
+# Simplified 24apr26 because we are getting 4 XFF headers
 _PROXY_CHAINS = [
-    lambda client: client,
-    lambda client: f"{client}, {_random_public_ip()}",
-    lambda client: (
-        f"{client}, 10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-        f", {_random_public_ip()}"
-    ),
-    lambda client: (
-        f"{client}, 192.168.{random.randint(0,255)}.{random.randint(1,254)}"
-        f", 10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-        f", {_random_public_ip()}"
+    #lambda client: client,
+    lambda client: f"{_random_public_ip()}"
+  #  lambda client: (
+  #      f"{client}, 10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
+  #      f", {_random_public_ip()}"
+  #  ),
+  #  lambda client: (
+  #      f"{client}, 192.168.{random.randint(0,255)}.{random.randint(1,254)}"
+  #      f", 10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
+  #      f", {_random_public_ip()}"
     ),
 ]
 
