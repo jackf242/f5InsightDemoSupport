@@ -336,7 +336,8 @@ NOISE_URIS = [
     "/", "/index.html", "/api/v1/status", "/health", "/favicon.ico",
     "/static/js/main.js", "/static/css/style.css", "/images/logo.png",
     "/login", "/logout", "/dashboard", "/settings", "/profile",
-    "/api/users", "/api/data", "/api/config", "/search", "/contact",
+    "/api/users", "/api/data", "/api/config", "/search", "/contact", 
+    "/abort",
 ]
 
 
