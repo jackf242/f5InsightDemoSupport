@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-gen5.py — Unified F5 Demo Traffic Generator
+gen5.py — Unified F5 Demo Traffic Generator with Application Profiles
 
-Combines high-throughput batch traffic (gen4) with rule-driven fingerprint
-traffic (FingerprintTrafficGenerator) in a single process.
+Combines high-throughput batch traffic with multi-application profiles
+(E-Commerce, Banking, SaaS Analytics, Healthcare, Media Streaming, Mobile API)
+and rule-driven fingerprint traffic (FingerprintTrafficGenerator) in a single process.
 
 Batch engine:
   - Runs indefinitely via ThreadPoolExecutor (configurable workers / batch size)
-  - Three traffic types: normal, error (weighted), file upload
+  - Configurable web application profiles (--apps, --app-weights)
+  - Optional multi-step stateful user journey simulation (--user-sessions)
+  - Three traffic types: normal application traffic, weighted errors, file uploads
   - XFF drawn from a shared realistic pool
 
 Fingerprint engine (opt-in via --rules):
@@ -17,14 +20,17 @@ Fingerprint engine (opt-in via --rules):
   - Supports --dry-run to log without sending
 
 Usage examples:
-  # Batch only (same as gen4 behavior)
+  # All web applications (default)
   python3 gen5.py
+
+  # Specific web application mix with custom weights
+  python3 gen5.py --apps ecommerce,banking,saas --app-weights 50,30,20
+
+  # Enable stateful multi-step user sessions
+  python3 gen5.py --user-sessions
 
   # With fingerprint engine
   python3 gen5.py --rules combined_rules.snapshot.yaml --fp-target 10.1.10.50 --fp-port 443 --fp-duration 30 --fp-tps 10
-
-  # Dry run (fingerprint generates + logs without sending)
-  python3 gen5.py --rules combined_rules.snapshot.yaml --dry-run
 
   # Tune batch engine
   python3 gen5.py --workers 60 --batch-size 2000
@@ -43,9 +49,9 @@ import urllib.error
 import urllib3
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -97,6 +103,13 @@ USER_AGENTS = [
     "PostmanRuntime/7.35.0",
 ]
 
+MOBILE_USER_AGENTS = [
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 DemoApp/2.4.1",
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 DemoApp/2.4.1",
+    "DemoApp/2.4.1 (iOS 17.4; iPhone14,2)",
+    "DemoApp/2.4.0 (Android 13; Pixel 7)",
+]
+
 ACCEPTS = [
     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "application/json",
@@ -136,27 +149,8 @@ def _random_public_ip() -> str:
             return ip
 
 
-# Proxy-chain lambdas for realistic XFF construction
-# Simplified 24apr26 because we are getting 4 XFF headers
-_PROXY_CHAINS = [
-    #lambda client: client,
-    lambda client: f"{_random_public_ip()}"
-  #  lambda client: (
-  #      f"{client}, 10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-  #      f", {_random_public_ip()}"
-  #  ),
-  #  lambda client: (
-  #      f"{client}, 192.168.{random.randint(0,255)}.{random.randint(1,254)}"
-  #      f", 10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-  #      f", {_random_public_ip()}"
-  #  ),
-]
-
-
 def generate_xff() -> str:
-    """Generate a realistic X-Forwarded-For value using proxy chain patterns."""
-    client = _random_private_ip() if random.random() < 0.6 else _random_public_ip()
- #   return random.choice(_PROXY_CHAINS)(client)
+    """Generate a realistic X-Forwarded-For value."""
     return _random_public_ip()
 
 
@@ -164,32 +158,248 @@ def generate_xff() -> str:
 XFF_POOL = [generate_xff() for _ in range(1000)]
 
 # ---------------------------------------------------------------------------
-# Shared requests.Session (batch engine + fingerprint engine both use this)
+# Shared requests.Session
 # ---------------------------------------------------------------------------
 session = requests.Session()
-_adapter = HTTPAdapter(pool_connections=50, pool_maxsize=100)
+_adapter = HTTPAdapter(pool_connections=100, pool_maxsize=200)
 session.mount("http://", _adapter)
 session.mount("https://", _adapter)
+
+
+# ---------------------------------------------------------------------------
+# Web Application Profiles
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AppRequestSpec:
+    """Specification for a web request within an application profile."""
+    method: str
+    path: str
+    headers: Dict[str, str] = field(default_factory=dict)
+    body: Optional[Any] = None
+    is_json: bool = False
+
+
+class BaseAppProfile:
+    """Base class for Web Application Profiles."""
+    name: str = "base"
+    host: str = "demo.f5"
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        """Returns (method, url, headers, body, is_json)"""
+        raise NotImplementedError
+
+    def get_user_journey(self) -> List[AppRequestSpec]:
+        """Returns a list of sequential request specs simulating a user journey."""
+        return []
+
+
+class ECommerceProfile(BaseAppProfile):
+    name = "ecommerce"
+    host = "shop.demo.f5"
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        item_id = random.randint(100, 9999)
+        category = random.choice(["electronics", "clothing", "home", "sports", "books"])
+        
+        specs = [
+            ("GET", f"https://{self.host}/", {}, None, False),
+            ("GET", f"https://{self.host}/category/{category}", {"Referer": f"https://{self.host}/"}, None, False),
+            ("GET", f"https://{self.host}/products/view?id={item_id}", {"Referer": f"https://{self.host}/category/{category}"}, None, False),
+            ("POST", f"https://{self.host}/cart/add", {"Referer": f"https://{self.host}/products/view?id={item_id}"}, {"product_id": item_id, "quantity": random.randint(1, 3)}, True),
+            ("POST", f"https://{self.host}/checkout/payment", {"Referer": f"https://{self.host}/cart"}, {"amount": round(random.uniform(19.99, 499.99), 2), "currency": "USD"}, True),
+            ("GET", f"https://{self.host}/api/v1/recommendations?user={random.randint(1000,9999)}", {"Accept": "application/json"}, None, False),
+        ]
+        method, url, extra_headers, body, is_json = random.choice(specs)
+        headers = {
+            "Host": self.host,
+            "Cookie": f"session_id=sess_{random.randint(10000,99999)}; cart_token=cart_{random.randint(100000,999999)}",
+        }
+        headers.update(extra_headers)
+        return method, url, headers, body, is_json
+
+    def get_user_journey(self) -> List[AppRequestSpec]:
+        item_id = random.randint(100, 9999)
+        category = random.choice(["electronics", "clothing", "home"])
+        return [
+            AppRequestSpec("GET", f"https://{self.host}/"),
+            AppRequestSpec("GET", f"https://{self.host}/category/{category}", {"Referer": f"https://{self.host}/"}),
+            AppRequestSpec("GET", f"https://{self.host}/products/view?id={item_id}", {"Referer": f"https://{self.host}/category/{category}"}),
+            AppRequestSpec("POST", f"https://{self.host}/cart/add", {"Referer": f"https://{self.host}/products/view?id={item_id}"}, {"product_id": item_id, "quantity": 1}, True),
+            AppRequestSpec("POST", f"https://{self.host}/checkout/payment", {"Referer": f"https://{self.host}/cart"}, {"amount": 89.99, "currency": "USD"}, True),
+        ]
+
+
+class BankingProfile(BaseAppProfile):
+    name = "banking"
+    host = "bank.demo.f5"
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        acc_id = random.randint(100000, 999999)
+        specs = [
+            ("GET", f"https://{self.host}/login", {}, None, False),
+            ("POST", f"https://{self.host}/auth/mfa-verify", {}, {"mfa_code": str(random.randint(100000, 999999))}, True),
+            ("GET", f"https://{self.host}/dashboard", {}, None, False),
+            ("GET", f"https://{self.host}/accounts/summary", {"Accept": "application/json"}, None, False),
+            ("GET", f"https://{self.host}/api/v2/balance?account={acc_id}", {"Accept": "application/json"}, None, False),
+            ("POST", f"https://{self.host}/transfers/wire", {}, {"from_account": str(acc_id), "to_account": str(random.randint(100000, 999999)), "amount": round(random.uniform(50.0, 2500.0), 2)}, True),
+            ("OPTIONS", f"https://{self.host}/api/v2/balance", {"Access-Control-Request-Method": "GET"}, None, False),
+        ]
+        method, url, extra_headers, body, is_json = random.choice(specs)
+        headers = {
+            "Host": self.host,
+            "Authorization": f"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.token_{random.randint(10000,99999)}",
+            "X-Transaction-ID": f"tx_{random.randint(10000000,99999999)}",
+            "X-Client-App-Version": "3.2.0",
+        }
+        headers.update(extra_headers)
+        return method, url, headers, body, is_json
+
+    def get_user_journey(self) -> List[AppRequestSpec]:
+        acc_id = random.randint(100000, 999999)
+        return [
+            AppRequestSpec("GET", f"https://{self.host}/login"),
+            AppRequestSpec("POST", f"https://{self.host}/auth/mfa-verify", {}, {"mfa_code": "492019"}, True),
+            AppRequestSpec("GET", f"https://{self.host}/dashboard"),
+            AppRequestSpec("GET", f"https://{self.host}/api/v2/balance?account={acc_id}"),
+            AppRequestSpec("POST", f"https://{self.host}/transfers/wire", {}, {"from_account": str(acc_id), "to_account": "882019", "amount": 250.00}, True),
+        ]
+
+
+class SaaSAnalyticsProfile(BaseAppProfile):
+    name = "saas"
+    host = "dashboard.demo.f5"
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        org_id = f"org_{random.randint(100,999)}"
+        graphql_queries = [
+            '{"query": "{ user { id email name organization { id name } } }"}',
+            '{"query": "{ metrics(timeframe: \\"24h\\") { timestamp tps latency errors } }"}',
+            '{"query": "{ teamMembers { id role lastLogin } }"}',
+        ]
+        specs = [
+            ("GET", f"https://{self.host}/api/v1/metrics", {"Accept": "application/json"}, None, False),
+            ("GET", f"https://{self.host}/api/v1/reports/export?format=csv", {}, None, False),
+            ("GET", f"https://{self.host}/settings/team", {}, None, False),
+            ("POST", f"https://{self.host}/graphql", {"Content-Type": "application/json"}, random.choice(graphql_queries), False),
+            ("GET", f"https://{self.host}/ws/telemetry", {"Upgrade": "websocket"}, None, False),
+        ]
+        method, url, extra_headers, body, is_json = random.choice(specs)
+        headers = {
+            "Host": self.host,
+            "X-Organization-ID": org_id,
+            "X-Api-Key": f"key_live_{random.randint(1000000,9999999)}",
+        }
+        headers.update(extra_headers)
+        return method, url, headers, body, is_json
+
+
+class HealthcareProfile(BaseAppProfile):
+    name = "healthcare"
+    host = "health.demo.f5"
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        patient_id = random.randint(10000, 99999)
+        specs = [
+            ("GET", f"https://{self.host}/patient/login", {}, None, False),
+            ("GET", f"https://{self.host}/records/v1/lab-results?patient={patient_id}", {"Accept": "application/fhir+json"}, None, False),
+            ("POST", f"https://{self.host}/appointments/schedule", {"Accept": "application/json"}, {"patient_id": patient_id, "doctor_id": random.randint(100, 999), "slot": "14:00"}, True),
+            ("GET", f"https://{self.host}/doctors/search?specialty=cardiology", {}, None, False),
+            ("POST", f"https://{self.host}/prescriptions/refill", {}, {"rx_number": f"RX-{random.randint(100000,999999)}"}, True),
+        ]
+        method, url, extra_headers, body, is_json = random.choice(specs)
+        headers = {
+            "Host": self.host,
+            "X-HIPAA-Consent": "true",
+            "Cookie": f"patient_session=ptsess_{random.randint(10000,99999)}",
+        }
+        headers.update(extra_headers)
+        return method, url, headers, body, is_json
+
+
+class MediaStreamingProfile(BaseAppProfile):
+    name = "media"
+    host = "media.demo.f5"
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        chunk_id = random.randint(1000, 9999)
+        specs = [
+            ("GET", f"https://{self.host}/stream/live/chunk_{chunk_id}.m4s", {"Range": "bytes=0-1048575", "Accept": "video/mp2t"}, None, False),
+            ("GET", f"https://{self.host}/media/hls/playlist.m3u8", {"Accept": "application/x-mpegURL"}, None, False),
+            ("GET", f"https://{self.host}/assets/images/banner_{random.randint(1,10)}.jpg", {"Accept": "image/avif,image/webp,*/*"}, None, False),
+            ("GET", f"https://{self.host}/api/v1/videos/trending", {"Accept": "application/json"}, None, False),
+            ("HEAD", f"https://{self.host}/stream/live/chunk_{chunk_id}.m4s", {}, None, False),
+        ]
+        method, url, extra_headers, body, is_json = random.choice(specs)
+        headers = {"Host": self.host}
+        headers.update(extra_headers)
+        return method, url, headers, body, is_json
+
+
+class MobileApiProfile(BaseAppProfile):
+    name = "mobile"
+    host = "api.demo.f5"
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        specs = [
+            ("POST", f"https://{self.host}/v1/auth/token", {}, {"grant_type": "refresh_token", "refresh_token": f"ref_{random.randint(100000,999999)}"}, True),
+            ("GET", f"https://{self.host}/v1/feed?page=1&limit=20", {"Accept": "application/json"}, None, False),
+            ("POST", f"https://{self.host}/v1/push/register", {}, {"device_token": f"tok_{random.randint(100000,999999)}", "platform": random.choice(["ios", "android"])}, True),
+            ("POST", f"https://{self.host}/v1/sync", {}, {"last_sync_timestamp": int(time.time()) - 3600}, True),
+        ]
+        method, url, extra_headers, body, is_json = random.choice(specs)
+        headers = {
+            "Host": self.host,
+            "User-Agent": random.choice(MOBILE_USER_AGENTS),
+            "X-Device-UUID": f"dev_{random.randint(10000000,99999999)}",
+        }
+        headers.update(extra_headers)
+        return method, url, headers, body, is_json
+
+
+class LegacyDefaultProfile(BaseAppProfile):
+    name = "legacy"
+    host = "ast.demo.f5"
+
+    URL_LIST = [
+        "https://ast.demo.f5",
+        "https://ast50.demo.f5",
+        "https://ast55.demo.f5",
+        "https://ast42.demo.f5",
+        "https://ast42.demo.f5:7443",
+        "https://ast66.demo.f5",
+        "http://ast50.demo.f5",
+        "https://sslo.demo.f5",
+        "https://accounts.demo.f5",
+        "https://ast80.demo.f5:9443",
+        "https://watchmen.demo.f5:8443",
+        "https://anotherapp.demo.f5",
+    ]
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        url = random.choice(self.URL_LIST)
+        method = random.choice(METHODS)
+        headers = {}
+        return method, url, headers, None, False
+
+
+ALL_PROFILES: Dict[str, BaseAppProfile] = {
+    "ecommerce": ECommerceProfile(),
+    "banking": BankingProfile(),
+    "saas": SaaSAnalyticsProfile(),
+    "healthcare": HealthcareProfile(),
+    "media": MediaStreamingProfile(),
+    "mobile": MobileApiProfile(),
+    "legacy": LegacyDefaultProfile(),
+}
+
 
 # ---------------------------------------------------------------------------
 # Batch engine configuration
 # ---------------------------------------------------------------------------
-URL_LIST = [
-    "https://ast.demo.f5",
-    "https://ast.demo.f5",
-    "https://ast.demo.f5",
-    "https://ast50.demo.f5",
-    "https://ast55.demo.f5",
-    "https://ast42.demo.f5",
-    "https://ast42.demo.f5:7443",
-    "https://ast66.demo.f5",
-    "http://ast50.demo.f5",
-    "https://sslo.demo.f5",
-    "https://accounts.demo.f5",
-    "https://ast80.demo.f5:9443",
-    "https://watchmen.demo.f5:8443",
-    "https://anotherapp.demo.f5",
-]
+ACTIVE_PROFILES: List[BaseAppProfile] = list(ALL_PROFILES.values())
+PROFILE_WEIGHTS: List[float] = [1.0] * len(ACTIVE_PROFILES)
+SIMULATE_USER_SESSIONS: bool = False
 
 ERROR_URLS_WEIGHTED = []
 for _url, _w in [
@@ -212,21 +422,55 @@ LOG_EVERY = 100
 # ---------------------------------------------------------------------------
 
 def send_normal_request(i: int) -> None:
-    url = random.choice(URL_LIST)
-    method = random.choice(METHODS)
+    profile = random.choices(ACTIVE_PROFILES, weights=PROFILE_WEIGHTS, k=1)[0]
+    
+    if SIMULATE_USER_SESSIONS and profile.get_user_journey():
+        journey = profile.get_user_journey()
+        session_id = f"sess_{random.randint(10000,99999)}"
+        client_ip = random.choice(XFF_POOL)
+        ua = random.choice(USER_AGENTS)
+        
+        for step in journey:
+            headers = {
+                "X-Forwarded-For": client_ip,
+                "User-Agent": ua,
+                "Accept": random.choice(ACCEPTS),
+                "Cookie": f"session_id={session_id}",
+            }
+            headers.update(step.headers)
+            try:
+                if step.is_json and step.body:
+                    resp = session.request(step.method, step.path, json=step.body, headers=headers, timeout=5, verify=False)
+                else:
+                    resp = session.request(step.method, step.path, data=step.body, headers=headers, timeout=5, verify=False)
+            except Exception:
+                pass
+        if i % LOG_EVERY == 0:
+            print(f"[BATCH][JOURNEY] {i+1}: Executed {len(journey)}-step journey for app [{profile.name}]")
+        return
+
+    method, url, extra_headers, body, is_json = profile.get_request_spec()
     headers = {
         "X-Forwarded-For": random.choice(XFF_POOL),
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": random.choice(ACCEPTS),
         "Content-Type": random.choice(CONTENT_TYPES),
     }
+    headers.update(extra_headers)
+
     try:
-        resp = session.request(method, url, headers=headers, timeout=5, verify=False)
+        if is_json and body:
+            resp = session.request(method, url, json=body, headers=headers, timeout=5, verify=False)
+        elif body:
+            resp = session.request(method, url, data=body, headers=headers, timeout=5, verify=False)
+        else:
+            resp = session.request(method, url, headers=headers, timeout=5, verify=False)
+
         if i % LOG_EVERY == 0:
-            print(f"[BATCH] Request {i+1}: {method} {url} -- {resp.status_code}")
+            print(f"[BATCH][{profile.name.upper()}] Request {i+1}: {method} {url} -- {resp.status_code}")
     except Exception as e:
         if i % LOG_EVERY == 0:
-            print(f"[BATCH] Request {i+1} failed: {e}")
+            print(f"[BATCH][{profile.name.upper()}] Request {i+1} failed: {e}")
 
 
 def send_error_request(i: int) -> None:
@@ -276,7 +520,9 @@ def run_batch_engine(total_requests: int = 4000, max_workers: int = 80) -> None:
     last_error_ts = 0.0
     last_upload_ts = 0.0
 
+    app_names = [p.name for p in ACTIVE_PROFILES]
     print(f"[BATCH] Starting batch engine — {max_workers} workers, {total_requests} req/batch")
+    print(f"[BATCH] Active application profiles: {', '.join(app_names)}")
 
     while True:
         # ---- normal traffic batch ----
@@ -476,7 +722,7 @@ class FingerprintTrafficGenerator:
             if method == "uri":
                 pattern = random.choice(rule["uri_substr"])
                 clean = pattern.split(";")[0]
-                for rx in [r"\\/", "^", "$", ".*", ".+", "?", "https?://",
+                for rx in [r"\/", "^", "$", ".*", ".+", "?", "https?://",
                             "[^/]+", "(?:", ")", "(", "|", "[", "]"]:
                     clean = clean.replace(rx, "")
                 if not clean.startswith("/"):
@@ -549,110 +795,85 @@ class FingerprintTrafficGenerator:
         )
 
     def _next_request(self) -> FingerprintRequest:
-        """70% fingerprint match, 30% noise; prioritize un-hit rules."""
-        unhit = [r for r in self.rules if r["id"] not in self.rules_hit]
-        if unhit and random.random() < 0.8:
-            rule = random.choice(unhit)
-            req = self._generate_fingerprint_request(rule, multi_match=random.random() < 0.3)
-            if req:
-                self.rules_hit.add(rule["id"])
-                return req
-
-        if random.random() < 0.7:
+        if random.random() < 0.70 and self.rules:
             rule = random.choice(self.rules)
-            req = self._generate_fingerprint_request(rule, multi_match=random.random() < 0.3)
+            req = self._generate_fingerprint_request(rule, multi_match=(random.random() < 0.2))
             if req:
-                self.rules_hit.add(rule["id"])
+                self.match_count += 1
+                if rule["id"]:
+                    self.rules_hit.add(rule["id"])
                 return req
-
+        self.noise_count += 1
         return self._generate_noise_request()
 
     def _send(self, req: FingerprintRequest) -> bool:
-        """Send a fingerprint request using the shared session."""
+        url = f"{self.base_url}{req.uri}"
         try:
-            url = f"{self.base_url}{req.uri}"
-            headers = dict(req.headers)
-            if req.cookies:
-                headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in req.cookies.items())
-            resp = session.get(url, headers=headers, timeout=5, verify=False)
-            return True
+            resp = session.get(
+                url,
+                headers=req.headers,
+                cookies=req.cookies,
+                timeout=5,
+                verify=False,
+            )
+            return resp.status_code < 500
         except Exception:
             return False
 
     def _log(self, req: FingerprintRequest, success: bool) -> None:
-        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        status = "OK  " if success else "FAIL"
-        if req.rule_id:
-            methods_str = ", ".join(req.methods_matched)
-            print(f"[FP][{ts}][{status}] MATCH rule={req.rule_id:<25} methods=[{methods_str}]")
-            print(f"[FP]           URI={req.uri[:60]}")
-            if any("header:" in m for m in req.methods_matched):
-                for k, v in req.headers.items():
-                    if k.lower().startswith("x-") or k.lower() in ("server", "via", "powered"):
-                        print(f"[FP]           {k}: {v[:50]}")
-            if any("cookie:" in m for m in req.methods_matched):
-                print(f"[FP]           Cookies: {req.cookies}")
-            self.match_count += 1
-        else:
-            print(f"[FP][{ts}][{status}] NOISE  URI={req.uri}")
-            self.noise_count += 1
-        self.request_count += 1
+        status_str = "OK" if success else "FAIL"
+        methods = ",".join(req.methods_matched)
+        print(f"[FP] #{self.request_count} [{status_str}] Rule: {req.rule_id} ({req.rule_label}) | Match: {methods} | URI: {req.uri}")
 
     def run(self, duration_minutes: int, tps: float = 5.0, dry_run: bool = False) -> None:
         end_time = datetime.now() + timedelta(minutes=duration_minutes)
-        interval = 1.0 / tps
+        interval = 1.0 / tps if tps > 0 else 0.2
 
-        print("=" * 70)
-        print(f"[FP] Fingerprint Traffic Generator")
-        print(f"[FP] Target : {self.base_url}")
-        print(f"[FP] Duration: {duration_minutes} min  |  TPS: {tps}  |  Rules: {len(self.rules)}")
-        print(f"[FP] Mode   : {'DRY RUN' if dry_run else 'LIVE'}")
-        print("=" * 70)
+        print(f"[FP] Fingerprint generator started: target={self.base_url}, duration={duration_minutes}m, tps={tps}, dry_run={dry_run}")
+        print(f"[FP] Loaded {len(self.rules)} rules from snapshot")
 
-        try:
-            while datetime.now() < end_time:
-                t0 = time.time()
-                req = self._next_request()
-                success = True if dry_run else self._send(req)
-                self._log(req, success)
-                sleep_for = interval - (time.time() - t0)
-                if sleep_for > 0:
-                    time.sleep(sleep_for)
-        except KeyboardInterrupt:
-            pass
+        while datetime.now() < end_time:
+            t0 = time.time()
+            self.request_count += 1
 
-        # Summary
-        total = max(1, self.request_count)
-        unhit = [r["id"] for r in self.rules if r["id"] not in self.rules_hit]
-        print()
-        print("=" * 70)
-        print("[FP] SUMMARY")
-        print(f"[FP] Total requests    : {self.request_count}")
-        print(f"[FP] Fingerprint matches: {self.match_count} ({100*self.match_count/total:.1f}%)")
-        print(f"[FP] Noise requests    : {self.noise_count} ({100*self.noise_count/total:.1f}%)")
-        print(f"[FP] Rules hit         : {len(self.rules_hit)} / {len(self.rules)}")
-        if unhit:
-            display = ", ".join(unhit[:20])
-            suffix = f" (+{len(unhit)-20} more)" if len(unhit) > 20 else ""
-            print(f"[FP] Rules never hit   : {display}{suffix}")
-        print("=" * 70)
+            req = self._next_request()
+
+            if dry_run:
+                self._log(req, True)
+            else:
+                success = self._send(req)
+                if self.request_count % 10 == 0:
+                    self._log(req, success)
+
+            elapsed = time.time() - t0
+            sleep_time = interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        print(f"[FP] Completed: total={self.request_count}, matches={self.match_count}, noise={self.noise_count}, unique_rules_hit={len(self.rules_hit)}")
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# CLI Argument Parser & Entrypoint
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="gen5 — Unified F5 Demo Traffic Generator",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="gen5.py — Unified F5 Demo Traffic Generator with App Profiles",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    batch = p.add_argument_group("Batch engine")
-    batch.add_argument("--workers", type=int, default=80,
-                       help="ThreadPoolExecutor worker count")
-    batch.add_argument("--batch-size", type=int, default=4000,
-                       help="Normal requests per batch")
+    batch = p.add_argument_group("Batch engine configuration")
+    batch.add_argument("--workers", "-w", type=int, default=80,
+                       help="ThreadPoolExecutor worker threads (default: 80)")
+    batch.add_argument("--batch-size", "-b", type=int, default=4000,
+                       help="Normal requests per batch (default: 4000)")
+    batch.add_argument("--apps", type=str, default="all",
+                       help="Comma-separated application profiles: ecommerce,banking,saas,healthcare,media,mobile,legacy or 'all' (default: all)")
+    batch.add_argument("--app-weights", type=str, default=None,
+                       help="Comma-separated weights for selected apps (e.g. 50,30,20)")
+    batch.add_argument("--user-sessions", action="store_true",
+                       help="Enable multi-step stateful user journey simulation")
 
     fp = p.add_argument_group("Fingerprint engine (disabled if --rules is omitted)")
     fp.add_argument("--rules", "-r", default=None,
@@ -672,9 +893,36 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    global ACTIVE_PROFILES, PROFILE_WEIGHTS, SIMULATE_USER_SESSIONS
     args = parse_args()
 
-    # ---- Fingerprint engine (optional, runs on its own daemon thread) ----
+    # ---- Configure Application Profiles ----
+    if args.apps.lower() == "all":
+        ACTIVE_PROFILES = list(ALL_PROFILES.values())
+    else:
+        selected_keys = [a.strip().lower() for a in args.apps.split(",") if a.strip().lower() in ALL_PROFILES]
+        if selected_keys:
+            ACTIVE_PROFILES = [ALL_PROFILES[k] for k in selected_keys]
+        else:
+            print(f"[MAIN] WARNING: Unknown apps specified [{args.apps}]. Defaulting to all profiles.")
+            ACTIVE_PROFILES = list(ALL_PROFILES.values())
+
+    if args.app_weights:
+        try:
+            weights = [float(w.strip()) for w in args.app_weights.split(",")]
+            if len(weights) == len(ACTIVE_PROFILES):
+                PROFILE_WEIGHTS = weights
+            else:
+                print(f"[MAIN] WARNING: Weight count ({len(weights)}) mismatch profile count ({len(ACTIVE_PROFILES)}). Using uniform weights.")
+                PROFILE_WEIGHTS = [1.0] * len(ACTIVE_PROFILES)
+        except Exception:
+            PROFILE_WEIGHTS = [1.0] * len(ACTIVE_PROFILES)
+    else:
+        PROFILE_WEIGHTS = [1.0] * len(ACTIVE_PROFILES)
+
+    SIMULATE_USER_SESSIONS = args.user_sessions
+
+    # ---- Fingerprint engine (optional, daemon thread) ----
     if args.rules:
         if not os.path.isfile(args.rules):
             print(f"[FP] ERROR: rules file not found: {args.rules}", file=sys.stderr)
@@ -698,7 +946,7 @@ def main() -> None:
         fp_thread = None
         print("[MAIN] No --rules file provided; fingerprint engine disabled.")
 
-    # ---- Batch engine (runs on the main thread indefinitely) ----
+    # ---- Batch engine (main thread) ----
     try:
         run_batch_engine(
             total_requests=args.batch_size,
