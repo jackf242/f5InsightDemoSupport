@@ -440,9 +440,11 @@ def send_normal_request(i: int) -> None:
             headers.update(step.headers)
             try:
                 if step.is_json and step.body:
-                    resp = session.request(step.method, step.path, json=step.body, headers=headers, timeout=5, verify=False)
+                    with session.request(step.method, step.path, json=step.body, headers=headers, timeout=5, verify=False) as resp:
+                        pass
                 else:
-                    resp = session.request(step.method, step.path, data=step.body, headers=headers, timeout=5, verify=False)
+                    with session.request(step.method, step.path, data=step.body, headers=headers, timeout=5, verify=False) as resp:
+                        pass
             except Exception:
                 pass
         if i % LOG_EVERY == 0:
@@ -460,14 +462,17 @@ def send_normal_request(i: int) -> None:
 
     try:
         if is_json and body:
-            resp = session.request(method, url, json=body, headers=headers, timeout=5, verify=False)
+            with session.request(method, url, json=body, headers=headers, timeout=5, verify=False) as resp:
+                status_code = resp.status_code
         elif body:
-            resp = session.request(method, url, data=body, headers=headers, timeout=5, verify=False)
+            with session.request(method, url, data=body, headers=headers, timeout=5, verify=False) as resp:
+                status_code = resp.status_code
         else:
-            resp = session.request(method, url, headers=headers, timeout=5, verify=False)
+            with session.request(method, url, headers=headers, timeout=5, verify=False) as resp:
+                status_code = resp.status_code
 
         if i % LOG_EVERY == 0:
-            print(f"[BATCH][{profile.name.upper()}] Request {i+1}: {method} {url} -- {resp.status_code}")
+            print(f"[BATCH][{profile.name.upper()}] Request {i+1}: {method} {url} -- {status_code}")
     except Exception as e:
         if i % LOG_EVERY == 0:
             print(f"[BATCH][{profile.name.upper()}] Request {i+1} failed: {e}")
@@ -476,8 +481,8 @@ def send_normal_request(i: int) -> None:
 def send_error_request(i: int) -> None:
     url = random.choice(ERROR_URLS_WEIGHTED)
     try:
-        resp = session.get(url, timeout=5, verify=False)
-        print(f"[BATCH][ERROR] {i+1}: GET {url} -- {resp.status_code}")
+        with session.get(url, timeout=5, verify=False) as resp:
+            print(f"[BATCH][ERROR] {i+1}: GET {url} -- {resp.status_code}")
     except Exception as e:
         print(f"[BATCH][ERROR] {i+1}: GET {url} failed: {e}")
 
@@ -495,15 +500,15 @@ def send_upload_request(i: int) -> None:
     }
     try:
         with open(UPLOAD_FILE, "rb") as f:
-            resp = session.post(
+            with session.post(
                 UPLOAD_URL,
                 headers=headers,
                 files={"attachment": ("waf-test-upload.txt", f, "text/plain")},
                 timeout=10,
                 verify=False,
-            )
-        if i % LOG_EVERY == 0:
-            print(f"[BATCH][UPLOAD] {i+1}: POST {UPLOAD_URL} -- {resp.status_code}")
+            ) as resp:
+                if i % LOG_EVERY == 0:
+                    print(f"[BATCH][UPLOAD] {i+1}: POST {UPLOAD_URL} -- {resp.status_code}")
     except Exception as e:
         if i % LOG_EVERY == 0:
             print(f"[BATCH][UPLOAD] {i+1} failed: {e}")
