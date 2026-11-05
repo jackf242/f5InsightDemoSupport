@@ -184,6 +184,7 @@ class BaseAppProfile:
     """Base class for Web Application Profiles."""
     name: str = "base"
     host: str = "demo.f5"
+    default_weight: float = 1.0
 
     def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
         """Returns (method, url, headers, body, is_json)"""
@@ -383,6 +384,30 @@ class LegacyDefaultProfile(BaseAppProfile):
         return method, url, headers, None, False
 
 
+class Asset9443Profile(BaseAppProfile):
+    name = "asset9443"
+    host = "10.1.10.50:9443"
+    default_weight = 0.1
+
+    PATHS = [
+        "/",
+        "/assets/images/banner_1.jpg",
+        "/assets/images/banner_2.jpg",
+        "/static/large_image.jpg",
+        "/media/hls/playlist.m3u8",
+        "/category/clothing",
+        "/category/electronics",
+        "/products/view?id=101",
+        "/products/view?id=102",
+        "/api/v1/videos/trending",
+        "/api/v1/metrics",
+    ]
+
+    def get_request_spec(self) -> Tuple[str, str, Dict[str, str], Optional[Any], bool]:
+        path = random.choice(self.PATHS)
+        return "GET", f"https://{self.host}{path}", {}, None, False
+
+
 ALL_PROFILES: Dict[str, BaseAppProfile] = {
     "ecommerce": ECommerceProfile(),
     "banking": BankingProfile(),
@@ -391,6 +416,7 @@ ALL_PROFILES: Dict[str, BaseAppProfile] = {
     "media": MediaStreamingProfile(),
     "mobile": MobileApiProfile(),
     "legacy": LegacyDefaultProfile(),
+    "asset9443": Asset9443Profile(),
 }
 
 
@@ -398,7 +424,7 @@ ALL_PROFILES: Dict[str, BaseAppProfile] = {
 # Batch engine configuration
 # ---------------------------------------------------------------------------
 ACTIVE_PROFILES: List[BaseAppProfile] = list(ALL_PROFILES.values())
-PROFILE_WEIGHTS: List[float] = [1.0] * len(ACTIVE_PROFILES)
+PROFILE_WEIGHTS: List[float] = [profile.default_weight for profile in ACTIVE_PROFILES]
 SIMULATE_USER_SESSIONS: bool = False
 
 ERROR_URLS_WEIGHTED = []
@@ -874,9 +900,9 @@ def parse_args() -> argparse.Namespace:
     batch.add_argument("--batch-size", "-b", type=int, default=4000,
                        help="Normal requests per batch (default: 4000)")
     batch.add_argument("--apps", type=str, default="all",
-                       help="Comma-separated application profiles: ecommerce,banking,saas,healthcare,media,mobile,legacy or 'all' (default: all)")
+                       help="Comma-separated application profiles: ecommerce,banking,saas,healthcare,media,mobile,legacy,asset9443 or 'all' (default: all)")
     batch.add_argument("--app-weights", type=str, default=None,
-                       help="Comma-separated weights for selected apps (e.g. 50,30,20)")
+                       help="Comma-separated weights for selected apps (e.g. 50,30,20); defaults: asset9443=0.1, other apps=1")
     batch.add_argument("--user-sessions", action="store_true",
                        help="Enable multi-step stateful user journey simulation")
 
@@ -918,12 +944,12 @@ def main() -> None:
             if len(weights) == len(ACTIVE_PROFILES):
                 PROFILE_WEIGHTS = weights
             else:
-                print(f"[MAIN] WARNING: Weight count ({len(weights)}) mismatch profile count ({len(ACTIVE_PROFILES)}). Using uniform weights.")
-                PROFILE_WEIGHTS = [1.0] * len(ACTIVE_PROFILES)
+                print(f"[MAIN] WARNING: Weight count ({len(weights)}) mismatch profile count ({len(ACTIVE_PROFILES)}). Using default profile weights.")
+                PROFILE_WEIGHTS = [profile.default_weight for profile in ACTIVE_PROFILES]
         except Exception:
-            PROFILE_WEIGHTS = [1.0] * len(ACTIVE_PROFILES)
+            PROFILE_WEIGHTS = [profile.default_weight for profile in ACTIVE_PROFILES]
     else:
-        PROFILE_WEIGHTS = [1.0] * len(ACTIVE_PROFILES)
+        PROFILE_WEIGHTS = [profile.default_weight for profile in ACTIVE_PROFILES]
 
     SIMULATE_USER_SESSIONS = args.user_sessions
 
